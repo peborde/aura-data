@@ -1,8 +1,9 @@
-"""Synchronise les cartes et les prix Dragon Ball Super Card Game (Fusion World et Masters) pour Aura.
+"""Synchronise les cartes et les prix de Dragon Ball Super Card Game (Fusion World et Masters) et de
+Cyberpunk TCG pour Aura.
 
 TCGCSV recopie chaque jour vers 20 h UTC les données de TCGplayer et demande qu'aucune app ne l'appelle
 directement : ce script les télécharge une fois par jour et en garde l'essentiel dans deux fichiers
-statiques, publiés sur GitHub Pages et lus par l'app.
+statiques par jeu, publiés sur GitHub Pages et lus par l'app.
 
     python3 sync.py <dossier de sortie>
 
@@ -20,8 +21,13 @@ import urllib.request
 TCGCSV = "https://tcgcsv.com"
 PUBLISHED = "https://peborde.github.io/aura-data"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
-# Catégories TCGplayer : le jeu actuel et l'ancien.
-SERIES = {"fw": 80, "masters": 27}
+# Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
+FORMAT = 2
+# Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
+GAMES = {
+    "dragonball": {"fw": 80, "masters": 27},
+    "cyberpunk": {"cyberpunk": 92},
+}
 
 
 def get(url, attempts=3):
@@ -43,12 +49,13 @@ def results(path):
     return data["results"]
 
 
-def published_update():
-    """Date de la version de TCGCSV déjà publiée, s'il y en a une."""
+def published():
+    """Date de la version de TCGCSV déjà publiée et version des fichiers, s'il y en a."""
     try:
-        return json.loads(get(f"{PUBLISHED}/meta.json", attempts=1)).get("tcgcsv")
+        meta = json.loads(get(f"{PUBLISHED}/meta.json", attempts=1))
+        return meta.get("tcgcsv"), meta.get("format", 1)
     except (urllib.error.URLError, ValueError):
-        return None
+        return None, None
 
 
 def extended(product, name):
@@ -65,54 +72,64 @@ def card_name(product, number):
     return re.sub(rf"\s+-\s+{re.escape(number)}\b", "", product["name"]).strip()
 
 
+def sync_game(name, series_categories):
+    """Extensions et cartes d'un jeu, de la plus récente à la plus ancienne."""
+    sets, cards = [], []
+    for series, category in series_categories.items():
+        for group in results(f"/tcgplayer/{category}/groups"):
+            # Le code de l'extension quand TCGplayer en donne un, son numéro sinon.
+            code = group.get("abbreviation") or None
+            set_id = code or str(group["groupId"])
+            if any(existing["id"] == set_id for existing in sets):
+                set_id = f"{set_id}-{group['groupId']}"
+            products = results(f"/tcgplayer/{category}/{group['groupId']}/products")
+            time.sleep(0.1)
+            prices = {}
+            for price in results(f"/tcgplayer/{category}/{group['groupId']}/prices"):
+                prices.setdefault(price["productId"], {})[price["subTypeName"]] = amount(price)
+            time.sleep(0.1)
+            count = 0
+            for product in products:
+                number = extended(product, "Number")
+                # Boîtes, boosters et decks n'ont pas de numéro.
+                if not number:
+                    continue
+                subtypes = prices.get(product["productId"], {})
+                foil = subtypes.get("Foil") or subtypes.get("Holofoil")
+                # Une carte qui n'existe qu'en brillante a ce prix-là comme prix normal.
+                normal = subtypes["Normal"] if "Normal" in subtypes else foil
+                card = {"id": product["productId"], "set": set_id, "number": number,
+                        "name": card_name(product, number), "rarity": extended(product, "Rarity"),
+                        "price": normal}
+                if "Normal" in subtypes and foil:
+                    card["foil"] = foil
+                cards.append(card)
+                count += 1
+            if count:
+                sets.append({"id": set_id, "code": code, "name": group["name"], "series": series,
+                             "released": (group.get("publishedOn") or "")[:10] or None, "cards": count})
+    sets.sort(key=lambda s: (s["released"] or "", s["id"]), reverse=True)
+    return sets, cards
+
+
 def main(output):
     updated = get(f"{TCGCSV}/last-updated.txt").decode().strip()
-    if updated == published_update():
+    if published() == (updated, FORMAT):
         print(f"TCGCSV n'a pas changé depuis {updated} : rien à publier.")
         changed = False
     else:
-        sets, cards = [], []
-        for series, category in SERIES.items():
-            for group in results(f"/tcgplayer/{category}/groups"):
-                set_id = group.get("abbreviation") or f"G{group['groupId']}"
-                if any(existing["id"] == set_id for existing in sets):
-                    set_id = f"{set_id}-{group['groupId']}"
-                products = results(f"/tcgplayer/{category}/{group['groupId']}/products")
-                time.sleep(0.1)
-                prices = {}
-                for price in results(f"/tcgplayer/{category}/{group['groupId']}/prices"):
-                    prices.setdefault(price["productId"], {})[price["subTypeName"]] = amount(price)
-                time.sleep(0.1)
-                count = 0
-                for product in products:
-                    number = extended(product, "Number")
-                    # Boîtes, boosters et decks n'ont pas de numéro.
-                    if not number:
-                        continue
-                    subtypes = prices.get(product["productId"], {})
-                    foil = subtypes.get("Foil") or subtypes.get("Holofoil")
-                    # Une carte qui n'existe qu'en brillante a ce prix-là comme prix normal.
-                    normal = subtypes["Normal"] if "Normal" in subtypes else foil
-                    card = {"id": product["productId"], "set": set_id, "number": number,
-                            "name": card_name(product, number), "rarity": extended(product, "Rarity"),
-                            "price": normal}
-                    if "Normal" in subtypes and foil:
-                        card["foil"] = foil
-                    cards.append(card)
-                    count += 1
-                if count:
-                    sets.append({"id": set_id, "name": group["name"], "series": series,
-                                 "released": (group.get("publishedOn") or "")[:10] or None, "cards": count})
-        sets.sort(key=lambda s: (s["released"] or "", s["id"]), reverse=True)
-        folder = os.path.join(output, "dragonball")
-        os.makedirs(folder, exist_ok=True)
-        for name, content in (("sets.json", {"updated": updated, "sets": sets}),
-                              ("cards.json", {"updated": updated, "cards": cards})):
-            with open(os.path.join(folder, name), "w", encoding="utf-8") as file:
-                json.dump(content, file, ensure_ascii=False, separators=(",", ":"))
+        for name, series_categories in GAMES.items():
+            sets, cards = sync_game(name, series_categories)
+            folder = os.path.join(output, name)
+            os.makedirs(folder, exist_ok=True)
+            for file_name, content in (("sets.json", {"updated": updated, "sets": sets}),
+                                       ("cards.json", {"updated": updated, "cards": cards})):
+                with open(os.path.join(folder, file_name), "w", encoding="utf-8") as file:
+                    json.dump(content, file, ensure_ascii=False, separators=(",", ":"))
+            print(f"{name} : {len(sets)} extensions, {len(cards)} cartes (TCGCSV du {updated}).")
         with open(os.path.join(output, "meta.json"), "w", encoding="utf-8") as file:
-            json.dump({"tcgcsv": updated, "synced": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, file)
-        print(f"{len(sets)} extensions, {len(cards)} cartes (TCGCSV du {updated}).")
+            json.dump({"tcgcsv": updated, "format": FORMAT,
+                       "synced": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, file)
         changed = True
 
     if "GITHUB_OUTPUT" in os.environ:
