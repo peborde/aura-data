@@ -1,0 +1,40 @@
+# Une fois par jour, après la mise à jour de TCGCSV (vers 20 h UTC), publie les cartes et les prix sur GitHub Pages.
+name: Synchronisation
+
+on:
+  schedule:
+    - cron: "40 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  # Pour réactiver la tâche : GitHub suspend les tâches planifiées d'un dépôt public sans activité depuis 60 jours.
+  actions: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: sync
+        run: python3 sync.py site
+      - if: steps.sync.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - if: steps.sync.outputs.changed == 'true'
+        id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Garder la tâche active
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/sync.yml/enable"
