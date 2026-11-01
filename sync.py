@@ -1,5 +1,5 @@
-"""Synchronise les cartes et les prix de Dragon Ball Super Card Game (Fusion World et Masters) et de
-Cyberpunk TCG pour Aura.
+"""Synchronise les cartes et les prix de Dragon Ball Super Card Game (Fusion World et Masters), de
+Cyberpunk TCG et de Yu-Gi-Oh! pour Aura.
 
 TCGCSV recopie chaque jour vers 20 h UTC les données de TCGplayer et demande qu'aucune app ne l'appelle
 directement : ce script les télécharge une fois par jour et en garde l'essentiel dans deux fichiers
@@ -22,11 +22,12 @@ TCGCSV = "https://tcgcsv.com"
 PUBLISHED = "https://peborde.github.io/aura-data"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
 # Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
-FORMAT = 2
+FORMAT = 3
 # Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
 GAMES = {
     "dragonball": {"fw": 80, "masters": 27},
     "cyberpunk": {"cyberpunk": 92},
+    "yugioh": {"yugioh": 2},
 }
 
 
@@ -72,6 +73,21 @@ def card_name(product, number):
     return re.sub(rf"\s+-\s+{re.escape(number)}\b", "", product["name"]).strip()
 
 
+def without_rarity(name, rarity):
+    """« Tri-Brigade Revolt (UR) » : TCGplayer ajoute la rareté au nom d'une carte Yu-Gi-Oh! imprimée dans plusieurs
+    raretés, que l'app montre à part. « (Alternate Art) » ou « (Judge Stamp) » restent."""
+    if not rarity:
+        return name
+
+    def kept(match):
+        tag = match.group(1)
+        is_rarity = ("Rare" in tag or tag.lower() in rarity.lower()
+                     or (re.fullmatch(r"[A-Z]{2,4}", tag) and tag[0] == rarity[0]))
+        return "" if is_rarity else match.group(0)
+
+    return " ".join(re.sub(r"\s*\(([^)]*)\)", kept, name).split())
+
+
 def sync_game(name, series_categories):
     """Extensions et cartes d'un jeu, de la plus récente à la plus ancienne."""
     sets, cards = [], []
@@ -96,13 +112,19 @@ def sync_game(name, series_categories):
                     continue
                 subtypes = prices.get(product["productId"], {})
                 foil = subtypes.get("Foil") or subtypes.get("Holofoil")
-                # Une carte qui n'existe qu'en brillante a ce prix-là comme prix normal.
-                normal = subtypes["Normal"] if "Normal" in subtypes else foil
+                first = subtypes.get("1st Edition")
+                # La version courante : « Unlimited » et « Limited » pour Yu-Gi-Oh!. Une carte qui n'existe qu'en
+                # brillante ou qu'en 1re édition a ce prix-là comme prix normal.
+                plain = next((kind for kind in ("Normal", "Unlimited", "Limited") if kind in subtypes), None)
+                rarity = extended(product, "Rarity")
+                title = card_name(product, number)
                 card = {"id": product["productId"], "set": set_id, "number": number,
-                        "name": card_name(product, number), "rarity": extended(product, "Rarity"),
-                        "price": normal}
-                if "Normal" in subtypes and foil:
+                        "name": without_rarity(title, rarity) if name == "yugioh" else title, "rarity": rarity,
+                        "price": subtypes[plain] if plain else foil or first}
+                if plain and foil:
                     card["foil"] = foil
+                if plain and first:
+                    card["first"] = first
                 cards.append(card)
                 count += 1
             if count:
