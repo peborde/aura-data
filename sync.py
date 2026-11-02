@@ -8,8 +8,8 @@ statiques par jeu, publiés sur GitHub Pages et lus par l'app.
     python3 sync.py <dossier de sortie>
 
 Les noms français des cartes Yu-Gi-Oh! viennent de YGOPRODeck, lu une fois par jour lui aussi. Les images des
-cartes Gundam et Dragon Ball Fusion World sont celles des sites officiels de Bandai, dont les listes de cartes
-sont lues chaque jour ; les autres restent celles de TCGplayer.
+cartes Gundam et Dragon Ball Fusion World sont celles des sites officiels de Bandai, celles des cartes Cyberpunk celles
+de sa base de cartes officielle (Netdeck), lues chaque jour ; les autres restent celles de TCGplayer.
 
 Rien n'est publié quand TCGCSV n'a pas changé depuis la dernière synchronisation ; une extension illisible
 arrête tout, pour ne jamais publier un catalogue incomplet.
@@ -123,6 +123,7 @@ def french_namer():
 
 GUNDAM = "https://www.gundam-gcg.com/en"
 FUSION_WORLD = "https://www.dbs-cardgame.com/fw"
+NETDECK = "https://api.netdeck.gg/api/cards/cyberpunk"
 
 
 def page(url):
@@ -153,6 +154,30 @@ def fusion_world_images():
     return images
 
 
+def cyberpunk_images():
+    """Image officielle de chaque version d'une carte Cyberpunk, par son extension et son numéro, d'après la base de
+    cartes officielle (Netdeck). Ses images n'ont que des adresses signées, valables quelques minutes : l'adresse
+    gardée est celle de la base, qui y renvoie."""
+    images, offset = {}, 0
+    while True:
+        data = json.loads(get(f"{NETDECK}?limit=60&offset={offset}"))
+        for card in data["items"]:
+            for printing in card["printings"]:
+                key = (cyberpunk_set(printing["set"]["name"]), printing["collector_number"].lower().replace("β", "b"))
+                images.setdefault(key, f"{NETDECK}/{card['slug']}/image?printing={printing['id']}")
+        offset += data["limit"]
+        if offset >= data["total"]:
+            return images
+        time.sleep(0.3)
+
+
+def cyberpunk_set(name):
+    """« Welcome to Night City — Beta » chez Netdeck, « Welcome to Night City - Beta » chez TCGplayer ; « S 1 » et
+    « Season 1 »."""
+    name = name.replace("—", "-").replace(" S 1", " Season 1").replace(" S1", " Season 1")
+    return " ".join(name.split()).lower()
+
+
 def is_variant(name):
     """« Vegito (Alternate Art) », « Videl (Gold) » : une version particulière de la carte. « (Mini) » fait partie du
     nom de certains personnages."""
@@ -163,6 +188,7 @@ def official_images(name, sets, cards):
     """Adresse de l'image officielle de chaque carte, quand la correspondance est sûre.
 
     Gundam : la rareté donne la version (« LR », puis « LR+ » pour « _p1 », « LR++ » pour « _p2 »).
+    Cyberpunk : l'extension et le numéro (« β001 » chez Netdeck, « B001 » chez TCGplayer).
     Fusion World : la carte sans précision prend l'image de base ; les versions particulières (« (Alternate Art) »),
     dans l'ordre où TCGplayer les a ajoutées, prennent celles des versions parallèles, seulement quand il y en a
     autant des deux côtés. Les autres cartes gardent l'image de TCGplayer."""
@@ -170,15 +196,27 @@ def official_images(name, sets, cards):
         images = gundam_images()
         return {card["id"]: images.get(card["number"] + (f"_p{card['rarity'].count('+')}" if "+" in (card["rarity"] or "") else ""))
                 for card in cards}
+    if name == "cyberpunk":
+        images = cyberpunk_images()
+        set_names = {s["id"]: cyberpunk_set(s["name"]) for s in sets}
+        found = {}
+        for card in cards:
+            number = card["number"].lower()
+            # « V - Streetkid (b) », numéro « 005 » : la version b.
+            version = re.search(r"\(([ab])\)\s*$", card["name"])
+            if version and not number[-1].isalpha():
+                number += version.group(1)
+            found[card["id"]] = images.get((set_names.get(card["set"]), number))
+        return found
     if name != "dragonball":
         return {}
+    found = {}
     images = fusion_world_images()
     fusion_world = {s["id"] for s in sets if s["series"] == "fw"}
     by_code = {}
     for card in cards:
         if card["set"] in fusion_world:
             by_code.setdefault(card["number"].split("_")[0], []).append(card)
-    found = {}
     for code, versions in by_code.items():
         parallels = sorted((key for key in images if key.startswith(f"{code}_p")), key=lambda key: int(key.rsplit("_p", 1)[1]))
         variants = sorted((card for card in versions if is_variant(card["name"])), key=lambda card: card["id"])
@@ -263,7 +301,7 @@ def main(output):
     else:
         for name, series_categories in GAMES.items():
             sets, cards = sync_game(name, series_categories)
-            if name in ("dragonball", "gundam"):
+            if name in ("dragonball", "gundam", "cyberpunk"):
                 print(f"{name} : {attach_official_images(name, sets, cards)} images officielles.")
             if name == "yugioh":
                 french = french_namer()
