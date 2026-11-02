@@ -9,7 +9,8 @@ statiques par jeu, publiés sur GitHub Pages et lus par l'app.
 
 Les noms français des cartes Yu-Gi-Oh! viennent de YGOPRODeck, lu une fois par jour lui aussi. Les images des
 cartes Gundam et Dragon Ball Fusion World sont celles des sites officiels de Bandai, celles des cartes Cyberpunk celles
-de sa base de cartes officielle (Netdeck), lues chaque jour ; les autres restent celles de TCGplayer.
+de sa base de cartes officielle (Netdeck), lues chaque jour ; les autres restent celles de TCGplayer. Les cartes
+Dragon Ball Masters gardent l'image de TCGplayer, plus grande, avec celle du site officiel en secours.
 
 Rien n'est publié quand TCGCSV n'a pas changé depuis la dernière synchronisation ; une extension illisible
 arrête tout, pour ne jamais publier un catalogue incomplet.
@@ -27,7 +28,7 @@ PUBLISHED = "https://peborde.github.io/aura-data"
 YGOPRODECK_FRENCH = "https://db.ygoprodeck.com/api/v7/cardinfo.php?language=fr"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
 # Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
-FORMAT = 7
+FORMAT = 8
 # Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
 GAMES = {
     "dragonball": {"fw": 80, "masters": 27},
@@ -123,6 +124,7 @@ def french_namer():
 
 GUNDAM = "https://www.gundam-gcg.com/en"
 FUSION_WORLD = "https://www.dbs-cardgame.com/fw"
+MASTERS = "https://www.dbs-cardgame.com"
 NETDECK = "https://api.netdeck.gg/api/cards/cyberpunk"
 
 
@@ -151,6 +153,17 @@ def fusion_world_images():
         pattern = r'card_no=([^"&]+)(?:&(?:amp;)?p=(_p\d+))?"[^>]*><img[^>]*data-src="\.\./\.\./images/cards/card/en/([^"]+)"'
         for number, version, path in re.findall(pattern, html):
             images.setdefault(number + version, f"{FUSION_WORLD}/images/cards/card/en/{path}")
+    return images
+
+
+def masters_images():
+    """Image officielle de chaque carte Dragon Ball Masters, l'ancien jeu, par son numéro (« BT1-001 », « BT1-005_PR »)."""
+    images = {}
+    for category in sorted(set(re.findall(r"category=(\d+)", page(f"{MASTERS}/us-en/cardlist/?search=true")))):
+        html = page(f"{MASTERS}/us-en/cardlist/?search=true&category={category}")
+        pattern = r'<dt class="cardNumber">([^<]+)</dt>.*?<img src="\.\./\.\./images/cardlist/cardimg/([^"]+)"'
+        for number, path in re.findall(pattern, html, re.S):
+            images.setdefault(number.strip().upper(), f"{MASTERS}/images/cardlist/cardimg/{path}")
     return images
 
 
@@ -229,22 +242,43 @@ def official_images(name, sets, cards):
     return found
 
 
-def attach_official_images(name, sets, cards):
-    """Ajoute l'image officielle (« img ») aux cartes qui en ont une. Quand un site officiel ne répond pas, les
-    images de la dernière publication servent."""
-    try:
-        found = official_images(name, sets, cards)
-    except (urllib.error.URLError, TimeoutError, ValueError) as error:
-        print(f"Site officiel indisponible pour {name} ({error}) : images de la dernière publication.")
-        try:
-            previous = json.loads(get(f"{PUBLISHED}/{name}/cards.json", attempts=1))["cards"]
-        except (urllib.error.URLError, ValueError):
-            previous = []
-        found = {card["id"]: card.get("img") for card in previous}
+def backup_images(name, sets, cards):
+    """Image officielle de secours, quand celle de TCGplayer ne se charge pas : celle des cartes Dragon Ball Masters,
+    plus petite que celle de TCGplayer (260 × 364 points). Plusieurs cartes du même numéro : seules celles sans
+    précision (« (Gold Stamped) ») ont l'image de base."""
+    if name != "dragonball":
+        return {}
+    images = masters_images()
+    masters = {s["id"] for s in sets if s["series"] == "masters"}
+    by_number = {}
     for card in cards:
-        if found.get(card["id"]):
-            card["img"] = found[card["id"]]
-    return sum(1 for card in cards if "img" in card)
+        if card["set"] in masters:
+            by_number.setdefault(card["number"].strip().upper(), []).append(card)
+    return {card["id"]: images.get(number)
+            for number, versions in by_number.items()
+            for card in versions if len(versions) == 1 or not is_variant(card["name"])}
+
+
+def attach_official_images(name, sets, cards):
+    """Ajoute l'image officielle aux cartes qui en ont une : « img » quand elle remplace celle de TCGplayer,
+    « backup » quand elle ne sert qu'en secours. Quand un site officiel ne répond pas, les images de la dernière
+    publication servent."""
+    previous = None
+    for field, finder in (("img", official_images), ("backup", backup_images)):
+        try:
+            found = finder(name, sets, cards)
+        except (urllib.error.URLError, TimeoutError, ValueError) as error:
+            print(f"Site officiel indisponible pour {name} ({error}) : images de la dernière publication.")
+            if previous is None:
+                try:
+                    previous = json.loads(get(f"{PUBLISHED}/{name}/cards.json", attempts=1))["cards"]
+                except (urllib.error.URLError, ValueError):
+                    previous = []
+            found = {card["id"]: card.get(field) for card in previous}
+        for card in cards:
+            if found.get(card["id"]):
+                card[field] = found[card["id"]]
+    return sum(1 for card in cards if "img" in card), sum(1 for card in cards if "backup" in card)
 
 
 def sync_game(name, series_categories):
@@ -302,7 +336,8 @@ def main(output):
         for name, series_categories in GAMES.items():
             sets, cards = sync_game(name, series_categories)
             if name in ("dragonball", "gundam", "cyberpunk"):
-                print(f"{name} : {attach_official_images(name, sets, cards)} images officielles.")
+                official, backup = attach_official_images(name, sets, cards)
+                print(f"{name} : {official} images officielles, {backup} en secours.")
             if name == "yugioh":
                 french = french_namer()
                 for card in cards:
