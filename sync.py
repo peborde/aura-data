@@ -27,7 +27,7 @@ PUBLISHED = "https://peborde.github.io/aura-data"
 YGOPRODECK_FRENCH = "https://db.ygoprodeck.com/api/v7/cardinfo.php?language=fr"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
 # Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
-FORMAT = 6
+FORMAT = 7
 # Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
 GAMES = {
     "dragonball": {"fw": 80, "masters": 27},
