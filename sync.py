@@ -1,5 +1,5 @@
 """Synchronise les cartes et les prix de Dragon Ball Super Card Game (Fusion World et Masters), de
-Cyberpunk TCG et de Yu-Gi-Oh! pour Aura.
+Cyberpunk TCG, de Yu-Gi-Oh! et de Gundam Card Game pour Aura.
 
 TCGCSV recopie chaque jour vers 20 h UTC les données de TCGplayer et demande qu'aucune app ne l'appelle
 directement : ce script les télécharge une fois par jour et en garde l'essentiel dans deux fichiers
@@ -25,12 +25,13 @@ PUBLISHED = "https://peborde.github.io/aura-data"
 YGOPRODECK_FRENCH = "https://db.ygoprodeck.com/api/v7/cardinfo.php?language=fr"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
 # Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
-FORMAT = 4
+FORMAT = 5
 # Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
 GAMES = {
     "dragonball": {"fw": 80, "masters": 27},
     "cyberpunk": {"cyberpunk": 92},
     "yugioh": {"yugioh": 2},
+    "gundam": {"gundam": 86},
 }
 
 
@@ -77,8 +78,9 @@ def card_name(product, number):
 
 
 def without_rarity(name, rarity):
-    """« Tri-Brigade Revolt (UR) » : TCGplayer ajoute la rareté au nom d'une carte Yu-Gi-Oh! imprimée dans plusieurs
-    raretés, que l'app montre à part. « (Alternate Art) » ou « (Judge Stamp) » restent."""
+    """« Tri-Brigade Revolt (UR) », « Gundam GP01 (R+) » : TCGplayer ajoute la rareté au nom d'une carte Yu-Gi-Oh! ou
+    Gundam imprimée dans plusieurs raretés, que l'app montre à part. « (Alternate Art) » ou « (Judge Stamp) »
+    restent."""
     if not rarity:
         return name
 
@@ -148,7 +150,7 @@ def sync_game(name, series_categories):
                 rarity = extended(product, "Rarity")
                 title = card_name(product, number)
                 card = {"id": product["productId"], "set": set_id, "number": number,
-                        "name": without_rarity(title, rarity) if name == "yugioh" else title, "rarity": rarity,
+                        "name": without_rarity(title, rarity) if name in ("yugioh", "gundam") else title, "rarity": rarity,
                         "price": subtypes[plain] if plain else foil or first}
                 if plain and foil:
                     card["foil"] = foil
