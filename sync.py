@@ -7,6 +7,8 @@ statiques par jeu, publiés sur GitHub Pages et lus par l'app.
 
     python3 sync.py <dossier de sortie>
 
+Les noms français des cartes Yu-Gi-Oh! viennent de YGOPRODeck, lu une fois par jour lui aussi.
+
 Rien n'est publié quand TCGCSV n'a pas changé depuis la dernière synchronisation ; une extension illisible
 arrête tout, pour ne jamais publier un catalogue incomplet.
 """
@@ -20,9 +22,10 @@ import urllib.request
 
 TCGCSV = "https://tcgcsv.com"
 PUBLISHED = "https://peborde.github.io/aura-data"
+YGOPRODECK_FRENCH = "https://db.ygoprodeck.com/api/v7/cardinfo.php?language=fr"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
 # Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
-FORMAT = 3
+FORMAT = 4
 # Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
 GAMES = {
     "dragonball": {"fw": 80, "masters": 27},
@@ -88,6 +91,32 @@ def without_rarity(name, rarity):
     return " ".join(re.sub(r"\s*\(([^)]*)\)", kept, name).split())
 
 
+def french_namer():
+    """Nom français d'une carte Yu-Gi-Oh!, d'après le code de son édition anglaise (« LOB-EN001 ») ou, à défaut,
+    son nom anglais ; les précisions entre parenthèses (« (Alternate Art) ») restent. YGOPRODeck n'a pas encore
+    traduit les cartes des extensions les plus récentes. Quand il ne répond pas, les noms de la dernière
+    publication servent."""
+    try:
+        by_code, by_name = {}, {}
+        for card in json.loads(get(YGOPRODECK_FRENCH))["data"]:
+            by_name[card.get("name_en")] = card["name"]
+            for printing in card.get("card_sets") or []:
+                by_code[printing["set_code"].upper()] = card["name"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as error:
+        print(f"YGOPRODeck indisponible ({error}) : noms français de la dernière publication.")
+        cards = json.loads(get(f"{PUBLISHED}/yugioh/cards.json", attempts=1))["cards"]
+        previous = {card["id"]: card["fr"] for card in cards if "fr" in card}
+        return lambda card: previous.get(card["id"])
+
+    def french(card):
+        title = re.sub(r"\s*\([^)]*\)", "", card["name"]).strip()
+        name = by_code.get(card["number"].upper()) or by_name.get(title)
+        tags = re.findall(r"\([^)]*\)", card["name"])
+        return " ".join([name] + tags) if name else None
+
+    return french
+
+
 def sync_game(name, series_categories):
     """Extensions et cartes d'un jeu, de la plus récente à la plus ancienne."""
     sets, cards = [], []
@@ -142,6 +171,12 @@ def main(output):
     else:
         for name, series_categories in GAMES.items():
             sets, cards = sync_game(name, series_categories)
+            if name == "yugioh":
+                french = french_namer()
+                for card in cards:
+                    translated = french(card)
+                    if translated and translated != card["name"]:
+                        card["fr"] = translated
             folder = os.path.join(output, name)
             os.makedirs(folder, exist_ok=True)
             for file_name, content in (("sets.json", {"updated": updated, "sets": sets}),
