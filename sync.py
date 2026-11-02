@@ -7,7 +7,9 @@ statiques par jeu, publiés sur GitHub Pages et lus par l'app.
 
     python3 sync.py <dossier de sortie>
 
-Les noms français des cartes Yu-Gi-Oh! viennent de YGOPRODeck, lu une fois par jour lui aussi.
+Les noms français des cartes Yu-Gi-Oh! viennent de YGOPRODeck, lu une fois par jour lui aussi. Les images des
+cartes Gundam et Dragon Ball Fusion World sont celles des sites officiels de Bandai, dont les listes de cartes
+sont lues chaque jour ; les autres restent celles de TCGplayer.
 
 Rien n'est publié quand TCGCSV n'a pas changé depuis la dernière synchronisation ; une extension illisible
 arrête tout, pour ne jamais publier un catalogue incomplet.
@@ -25,7 +27,7 @@ PUBLISHED = "https://peborde.github.io/aura-data"
 YGOPRODECK_FRENCH = "https://db.ygoprodeck.com/api/v7/cardinfo.php?language=fr"
 USER_AGENT = "AuraDataSync/1.0 (+https://github.com/peborde/aura-data)"
 # Version des fichiers publiés : une nouvelle version republie tout, même quand TCGCSV n'a pas changé.
-FORMAT = 5
+FORMAT = 6
 # Dossier de chaque jeu et ses séries, chacune une catégorie TCGplayer.
 GAMES = {
     "dragonball": {"fw": 80, "masters": 27},
@@ -35,8 +37,8 @@ GAMES = {
 }
 
 
-def get(url, attempts=3):
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+def get(url, attempts=3, accept="application/json"):
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
     for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -119,6 +121,94 @@ def french_namer():
     return french
 
 
+GUNDAM = "https://www.gundam-gcg.com/en"
+FUSION_WORLD = "https://www.dbs-cardgame.com/fw"
+
+
+def page(url):
+    time.sleep(0.3)
+    return get(url, accept="text/html").decode("utf-8", "ignore")
+
+
+def gundam_images():
+    """Image officielle de chaque version d'une carte Gundam : « GD01-001 », puis « GD01-001_p1 »… pour ses
+    versions parallèles, d'après la liste de chaque produit sur le site officiel."""
+    images = {}
+    for package in sorted(set(re.findall(r'data-val="(\d{6})"', page(f"{GUNDAM}/cards/")))):
+        for path in re.findall(r'data-src="\.\./images/cards/card/([^"?]+)', page(f"{GUNDAM}/cards/?package={package}")):
+            images.setdefault(path.rsplit(".", 1)[0], f"{GUNDAM}/images/cards/card/{path}")
+    return images
+
+
+def fusion_world_images():
+    """Image officielle de chaque version d'une carte Dragon Ball Fusion World (« FB01-001 », « FB01-001_p1 »),
+    d'après la liste de chaque extension sur le site officiel."""
+    images = {}
+    categories = sorted(set(re.findall(r"58\d{4}", page(f"{FUSION_WORLD}/en/cardlist/"))))
+    for category in categories:
+        html = page(f"{FUSION_WORLD}/en/cardlist/?search=true&category%5B0%5D={category}")
+        pattern = r'card_no=([^"&]+)(?:&(?:amp;)?p=(_p\d+))?"[^>]*><img[^>]*data-src="\.\./\.\./images/cards/card/en/([^"]+)"'
+        for number, version, path in re.findall(pattern, html):
+            images.setdefault(number + version, f"{FUSION_WORLD}/images/cards/card/en/{path}")
+    return images
+
+
+def is_variant(name):
+    """« Vegito (Alternate Art) », « Videl (Gold) » : une version particulière de la carte. « (Mini) » fait partie du
+    nom de certains personnages."""
+    return any(tag != "Mini" for tag in re.findall(r"\(([^)]*)\)", name))
+
+
+def official_images(name, sets, cards):
+    """Adresse de l'image officielle de chaque carte, quand la correspondance est sûre.
+
+    Gundam : la rareté donne la version (« LR », puis « LR+ » pour « _p1 », « LR++ » pour « _p2 »).
+    Fusion World : la carte sans précision prend l'image de base ; les versions particulières (« (Alternate Art) »),
+    dans l'ordre où TCGplayer les a ajoutées, prennent celles des versions parallèles, seulement quand il y en a
+    autant des deux côtés. Les autres cartes gardent l'image de TCGplayer."""
+    if name == "gundam":
+        images = gundam_images()
+        return {card["id"]: images.get(card["number"] + (f"_p{card['rarity'].count('+')}" if "+" in (card["rarity"] or "") else ""))
+                for card in cards}
+    if name != "dragonball":
+        return {}
+    images = fusion_world_images()
+    fusion_world = {s["id"] for s in sets if s["series"] == "fw"}
+    by_code = {}
+    for card in cards:
+        if card["set"] in fusion_world:
+            by_code.setdefault(card["number"].split("_")[0], []).append(card)
+    found = {}
+    for code, versions in by_code.items():
+        parallels = sorted((key for key in images if key.startswith(f"{code}_p")), key=lambda key: int(key.rsplit("_p", 1)[1]))
+        variants = sorted((card for card in versions if is_variant(card["name"])), key=lambda card: card["id"])
+        for card in versions:
+            if not is_variant(card["name"]):
+                found[card["id"]] = images.get(code)
+        if len(variants) == len(parallels):
+            for card, key in zip(variants, parallels):
+                found[card["id"]] = images[key]
+    return found
+
+
+def attach_official_images(name, sets, cards):
+    """Ajoute l'image officielle (« img ») aux cartes qui en ont une. Quand un site officiel ne répond pas, les
+    images de la dernière publication servent."""
+    try:
+        found = official_images(name, sets, cards)
+    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        print(f"Site officiel indisponible pour {name} ({error}) : images de la dernière publication.")
+        try:
+            previous = json.loads(get(f"{PUBLISHED}/{name}/cards.json", attempts=1))["cards"]
+        except (urllib.error.URLError, ValueError):
+            previous = []
+        found = {card["id"]: card.get("img") for card in previous}
+    for card in cards:
+        if found.get(card["id"]):
+            card["img"] = found[card["id"]]
+    return sum(1 for card in cards if "img" in card)
+
+
 def sync_game(name, series_categories):
     """Extensions et cartes d'un jeu, de la plus récente à la plus ancienne."""
     sets, cards = [], []
@@ -173,6 +263,8 @@ def main(output):
     else:
         for name, series_categories in GAMES.items():
             sets, cards = sync_game(name, series_categories)
+            if name in ("dragonball", "gundam"):
+                print(f"{name} : {attach_official_images(name, sets, cards)} images officielles.")
             if name == "yugioh":
                 french = french_namer()
                 for card in cards:
